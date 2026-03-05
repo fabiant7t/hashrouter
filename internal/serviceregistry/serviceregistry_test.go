@@ -7,25 +7,15 @@ import (
 	"time"
 
 	"github.com/fabiant7t/hashrouter/internal/serviceregistry"
-	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes/fake"
 )
 
-func TestQueryEndpoints_WithNumericTargetPort(t *testing.T) {
+func TestQueryEndpoints_FromEndpointSlicePorts(t *testing.T) {
 	t.Parallel()
 
 	client := fake.NewSimpleClientset(
-		&corev1.Service{
-			ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: "default"},
-			Spec: corev1.ServiceSpec{
-				Ports: []corev1.ServicePort{
-					{TargetPort: intstr.FromInt32(8443)},
-				},
-			},
-		},
 		&discoveryv1.EndpointSlice{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "api-1",
@@ -38,6 +28,12 @@ func TestQueryEndpoints_WithNumericTargetPort(t *testing.T) {
 			Endpoints: []discoveryv1.Endpoint{
 				{
 					Addresses: []string{"10.0.0.10"},
+					NodeName:  strPtr("node-a"),
+				},
+			},
+			Ports: []discoveryv1.EndpointPort{
+				{
+					Port: int32Ptr(8443),
 				},
 			},
 		},
@@ -60,23 +56,15 @@ func TestQueryEndpoints_WithNumericTargetPort(t *testing.T) {
 		t.Fatalf("endpoint count mismatch: got %d want %d", len(got), 1)
 	}
 
-	if got[0].IPv4 != "10.0.0.10" || got[0].Port != 8443 {
+	if got[0].PrivateIPv4 != "10.0.0.10" || got[0].TargetPort != 8443 || got[0].NodeName != "node-a" {
 		t.Fatalf("endpoint mismatch: got %+v", got[0])
 	}
 }
 
-func TestQueryEndpoints_WithNamedTargetPortAndIPv4Filtering(t *testing.T) {
+func TestQueryEndpoints_WithIPv4FilteringAndNodeName(t *testing.T) {
 	t.Parallel()
 
 	client := fake.NewSimpleClientset(
-		&corev1.Service{
-			ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "default"},
-			Spec: corev1.ServiceSpec{
-				Ports: []corev1.ServicePort{
-					{TargetPort: intstr.FromString("http")},
-				},
-			},
-		},
 		&discoveryv1.EndpointSlice{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "web-1",
@@ -89,11 +77,11 @@ func TestQueryEndpoints_WithNamedTargetPortAndIPv4Filtering(t *testing.T) {
 			Endpoints: []discoveryv1.Endpoint{
 				{
 					Addresses: []string{"10.0.0.20", "2001:db8::1"},
+					NodeName:  strPtr("node-b"),
 				},
 			},
 			Ports: []discoveryv1.EndpointPort{
 				{
-					Name: strPtr("http"),
 					Port: int32Ptr(8080),
 				},
 			},
@@ -117,12 +105,12 @@ func TestQueryEndpoints_WithNamedTargetPortAndIPv4Filtering(t *testing.T) {
 		t.Fatalf("endpoint count mismatch: got %d want %d", len(got), 1)
 	}
 
-	if got[0].IPv4 != "10.0.0.20" || got[0].Port != 8080 {
+	if got[0].PrivateIPv4 != "10.0.0.20" || got[0].TargetPort != 8080 || got[0].NodeName != "node-b" {
 		t.Fatalf("endpoint mismatch: got %+v", got[0])
 	}
 }
 
-func TestQueryEndpoints_NotFound(t *testing.T) {
+func TestQueryEndpoints_NotFound_ReturnsEmpty(t *testing.T) {
 	t.Parallel()
 
 	client := fake.NewSimpleClientset()
@@ -135,8 +123,12 @@ func TestQueryEndpoints_NotFound(t *testing.T) {
 		t.Fatalf("new registry: %v", err)
 	}
 
-	if _, err := registry.QueryEndpoints("default", "missing"); err == nil {
-		t.Fatal("expected not found error")
+	got, err := registry.QueryEndpoints("default", "missing")
+	if err != nil {
+		t.Fatalf("query endpoints: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("endpoint count mismatch: got %d want %d", len(got), 0)
 	}
 }
 
@@ -144,14 +136,6 @@ func TestQueryEndpoints_MultipleEndpointSlices_DeduplicatesAndFiltersNotReady(t 
 	t.Parallel()
 
 	client := fake.NewSimpleClientset(
-		&corev1.Service{
-			ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "default"},
-			Spec: corev1.ServiceSpec{
-				Ports: []corev1.ServicePort{
-					{TargetPort: intstr.FromString("http")},
-				},
-			},
-		},
 		&discoveryv1.EndpointSlice{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "web-1",
@@ -164,9 +148,11 @@ func TestQueryEndpoints_MultipleEndpointSlices_DeduplicatesAndFiltersNotReady(t 
 			Endpoints: []discoveryv1.Endpoint{
 				{
 					Addresses: []string{"10.0.0.20"},
+					NodeName:  strPtr("node-a"),
 				},
 				{
 					Addresses: []string{"10.0.0.21"},
+					NodeName:  strPtr("node-b"),
 					Conditions: discoveryv1.EndpointConditions{
 						Ready: boolPtr(false),
 					},
@@ -174,7 +160,6 @@ func TestQueryEndpoints_MultipleEndpointSlices_DeduplicatesAndFiltersNotReady(t 
 			},
 			Ports: []discoveryv1.EndpointPort{
 				{
-					Name: strPtr("http"),
 					Port: int32Ptr(8080),
 				},
 			},
@@ -191,11 +176,11 @@ func TestQueryEndpoints_MultipleEndpointSlices_DeduplicatesAndFiltersNotReady(t 
 			Endpoints: []discoveryv1.Endpoint{
 				{
 					Addresses: []string{"10.0.0.20"},
+					NodeName:  strPtr("node-a"),
 				},
 			},
 			Ports: []discoveryv1.EndpointPort{
 				{
-					Name: strPtr("http"),
 					Port: int32Ptr(8080),
 				},
 			},
@@ -216,7 +201,7 @@ func TestQueryEndpoints_MultipleEndpointSlices_DeduplicatesAndFiltersNotReady(t 
 	}
 
 	want := []serviceregistry.Endpoint{
-		{IPv4: "10.0.0.20", Port: 8080},
+		{PrivateIPv4: "10.0.0.20", TargetPort: 8080, NodeName: "node-a"},
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("endpoint mismatch: got %+v want %+v", got, want)

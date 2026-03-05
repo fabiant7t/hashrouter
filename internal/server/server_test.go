@@ -17,8 +17,8 @@ func TestNewHandler_Routes(t *testing.T) {
 	mockRegistry := &serviceRegistryMock{
 		queryEndpointsFunc: func(namespace string, serviceName string) ([]serviceregistry.Endpoint, error) {
 			return []serviceregistry.Endpoint{
-				{IPv4: "10.1.0.3", Port: 8080},
-				{IPv4: "10.1.0.4", Port: 8081},
+				{PrivateIPv4: "10.1.0.3", TargetPort: 8080, NodeName: "node-a"},
+				{PrivateIPv4: "10.1.0.4", TargetPort: 8081, NodeName: "node-b"},
 			}, nil
 		},
 	}

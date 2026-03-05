@@ -7,20 +7,18 @@ import (
 	"slices"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
-	corelisters "k8s.io/client-go/listers/core/v1"
 	discoverylisters "k8s.io/client-go/listers/discovery/v1"
 	"k8s.io/client-go/tools/cache"
 )
 
 type Endpoint struct {
-	IPv4 string
-	Port int32
+	PrivateIPv4 string
+	TargetPort  int32
+	NodeName    string
 }
 
 type ServiceRegistry interface {
@@ -29,22 +27,18 @@ type ServiceRegistry interface {
 
 type KubernetesServiceRegistry struct {
 	factory              informers.SharedInformerFactory
-	servicesLister       corelisters.ServiceLister
 	endpointSlicesLister discoverylisters.EndpointSliceLister
 	syncChecks           []cache.InformerSynced
 }
 
 func New(ctx context.Context, client kubernetes.Interface, resyncPeriod time.Duration) (ServiceRegistry, error) {
 	factory := informers.NewSharedInformerFactory(client, resyncPeriod)
-	servicesInformer := factory.Core().V1().Services()
 	endpointSlicesInformer := factory.Discovery().V1().EndpointSlices()
 
 	registry := &KubernetesServiceRegistry{
 		factory:              factory,
-		servicesLister:       servicesInformer.Lister(),
 		endpointSlicesLister: endpointSlicesInformer.Lister(),
 		syncChecks: []cache.InformerSynced{
-			servicesInformer.Informer().HasSynced,
 			endpointSlicesInformer.Informer().HasSynced,
 		},
 	}
@@ -58,11 +52,6 @@ func New(ctx context.Context, client kubernetes.Interface, resyncPeriod time.Dur
 }
 
 func (r *KubernetesServiceRegistry) QueryEndpoints(namespace string, serviceName string) ([]Endpoint, error) {
-	service, err := r.servicesLister.Services(namespace).Get(serviceName)
-	if err != nil {
-		return nil, fmt.Errorf("get service %s/%s: %w", namespace, serviceName, err)
-	}
-
 	endpointSlices, err := r.endpointSlicesLister.EndpointSlices(namespace).List(labels.SelectorFromSet(labels.Set{
 		discoveryv1.LabelServiceName: serviceName,
 	}))
@@ -73,10 +62,15 @@ func (r *KubernetesServiceRegistry) QueryEndpoints(namespace string, serviceName
 	result := make([]Endpoint, 0)
 	seen := map[Endpoint]struct{}{}
 	for _, endpointSlice := range endpointSlices {
-		resolvedPorts := resolveTargetPorts(service.Spec.Ports, endpointSlice.Ports)
+		resolvedPorts := resolveTargetPorts(endpointSlice.Ports)
 		for _, endpoint := range endpointSlice.Endpoints {
 			if endpoint.Conditions.Ready != nil && !*endpoint.Conditions.Ready {
 				continue
+			}
+
+			nodeName := ""
+			if endpoint.NodeName != nil {
+				nodeName = *endpoint.NodeName
 			}
 
 			for _, address := range endpoint.Addresses {
@@ -87,8 +81,9 @@ func (r *KubernetesServiceRegistry) QueryEndpoints(namespace string, serviceName
 
 				for _, port := range resolvedPorts {
 					candidate := Endpoint{
-						IPv4: address,
-						Port: port,
+						PrivateIPv4: address,
+						TargetPort:  port,
+						NodeName:    nodeName,
 					}
 					if _, exists := seen[candidate]; exists {
 						continue
@@ -101,16 +96,20 @@ func (r *KubernetesServiceRegistry) QueryEndpoints(namespace string, serviceName
 	}
 
 	slices.SortFunc(result, func(a Endpoint, b Endpoint) int {
-		if a.IPv4 < b.IPv4 {
+		if a.PrivateIPv4 < b.PrivateIPv4 {
 			return -1
 		}
-		if a.IPv4 > b.IPv4 {
+		if a.PrivateIPv4 > b.PrivateIPv4 {
 			return 1
 		}
 		switch {
-		case a.Port < b.Port:
+		case a.TargetPort < b.TargetPort:
 			return -1
-		case a.Port > b.Port:
+		case a.TargetPort > b.TargetPort:
+			return 1
+		case a.NodeName < b.NodeName:
+			return -1
+		case a.NodeName > b.NodeName:
 			return 1
 		default:
 			return 0
@@ -120,29 +119,15 @@ func (r *KubernetesServiceRegistry) QueryEndpoints(namespace string, serviceName
 	return result, nil
 }
 
-func resolveTargetPorts(servicePorts []corev1.ServicePort, endpointSlicePorts []discoveryv1.EndpointPort) []int32 {
-	resolved := make([]int32, 0, len(servicePorts))
+func resolveTargetPorts(endpointSlicePorts []discoveryv1.EndpointPort) []int32 {
+	resolved := make([]int32, 0, len(endpointSlicePorts))
 	seen := map[int32]struct{}{}
 
-	for _, port := range servicePorts {
-		var target int32
-		switch port.TargetPort.Type {
-		case intstr.Int:
-			if port.TargetPort.IntValue() == 0 {
-				target = port.Port
-				break
-			}
-			target = int32(port.TargetPort.IntValue())
-		case intstr.String:
-			name := port.TargetPort.String()
-			matched, ok := matchNamedEndpointPort(name, endpointSlicePorts)
-			if !ok {
-				continue
-			}
-			target = matched
-		default:
-			target = port.Port
+	for _, port := range endpointSlicePorts {
+		if port.Port == nil || *port.Port <= 0 {
+			continue
 		}
+		target := *port.Port
 
 		if _, exists := seen[target]; exists {
 			continue
@@ -153,17 +138,4 @@ func resolveTargetPorts(servicePorts []corev1.ServicePort, endpointSlicePorts []
 
 	slices.Sort(resolved)
 	return resolved
-}
-
-func matchNamedEndpointPort(name string, endpointSlicePorts []discoveryv1.EndpointPort) (int32, bool) {
-	for _, port := range endpointSlicePorts {
-		if port.Name == nil || *port.Name != name {
-			continue
-		}
-		if port.Port == nil {
-			return 0, false
-		}
-		return *port.Port, true
-	}
-	return 0, false
 }

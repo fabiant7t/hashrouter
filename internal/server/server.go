@@ -80,7 +80,7 @@ func (s *Server) handleServicePath(w http.ResponseWriter, r *http.Request, names
 
 	candidates := make([]string, 0, len(endpoints))
 	for _, endpoint := range endpoints {
-		candidates = append(candidates, endpoint.IPv4)
+		candidates = append(candidates, endpoint.PrivateIPv4)
 	}
 
 	_, selectedIP := rendezvous.HighestScore(candidates, path)
@@ -90,7 +90,7 @@ func (s *Server) handleServicePath(w http.ResponseWriter, r *http.Request, names
 		return
 	}
 
-	target := fmt.Sprintf("http://%s:%d/%s", targetEndpoint.IPv4, targetEndpoint.Port, path)
+	target := fmt.Sprintf("http://%s:%d/%s", targetEndpoint.PrivateIPv4, targetEndpoint.TargetPort, path)
 	http.Redirect(w, r, target, http.StatusTemporaryRedirect)
 }
 
@@ -119,7 +119,7 @@ func parseServicePath(path string) (namespace string, serviceName string, remain
 
 func findEndpointByIP(endpoints []serviceregistry.Endpoint, ip string) (serviceregistry.Endpoint, bool) {
 	for _, endpoint := range endpoints {
-		if endpoint.IPv4 == ip {
+		if endpoint.PrivateIPv4 == ip {
 			return endpoint, true
 		}
 	}
