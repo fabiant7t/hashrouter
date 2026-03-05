@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/fabiant7t/hashrouter/internal/rendezvous"
@@ -17,22 +19,23 @@ func TestNewHandler_Routes(t *testing.T) {
 	mockRegistry := &serviceRegistryMock{
 		queryEndpointsFunc: func(namespace string, serviceName string) ([]serviceregistry.Endpoint, error) {
 			return []serviceregistry.Endpoint{
-				{PrivateIPv4: "10.1.0.3", TargetPort: 8080, NodeName: "node-a"},
-				{PrivateIPv4: "10.1.0.4", TargetPort: 8081, NodeName: "node-b"},
+				{Addresses: []string{"10.1.0.9", "10.1.0.3"}, TargetPort: 8080, NodeName: "node-a"},
+				{Addresses: []string{"10.1.0.8", "10.1.0.4"}, TargetPort: 8081, NodeName: "node-b"},
 			}, nil
 		},
 	}
 
 	handler := server.NewHandler(mockRegistry, "dev")
-	_, selectedIP := rendezvous.HighestScore([]string{"10.1.0.3", "10.1.0.4"}, "v1/users")
-	selectedPort := int32(8080)
-	if selectedIP == "10.1.0.4" {
-		selectedPort = 8081
+	candidateA := sortedAddressesCSV([]string{"10.1.0.9", "10.1.0.3"})
+	candidateB := sortedAddressesCSV([]string{"10.1.0.8", "10.1.0.4"})
+	_, selectedCandidate := rendezvous.HighestScore([]string{candidateA, candidateB}, "v1/users")
+	expectedAddress := "10.1.0.3"
+	expectedPort := "8080"
+	if selectedCandidate == candidateB {
+		expectedAddress = "10.1.0.4"
+		expectedPort = "8081"
 	}
-	expectedLocation := "http://" + selectedIP + ":" + "8080" + "/v1/users"
-	if selectedPort == 8081 {
-		expectedLocation = "http://" + selectedIP + ":" + "8081" + "/v1/users"
-	}
+	expectedLocation := "http://" + expectedAddress + ":" + expectedPort + "/v1/users"
 
 	tests := []struct {
 		name       string
@@ -147,4 +150,10 @@ type serviceRegistryMock struct {
 
 func (m *serviceRegistryMock) QueryEndpoints(namespace string, serviceName string) ([]serviceregistry.Endpoint, error) {
 	return m.queryEndpointsFunc(namespace, serviceName)
+}
+
+func sortedAddressesCSV(addresses []string) string {
+	sorted := slices.Clone(addresses)
+	slices.Sort(sorted)
+	return strings.Join(sorted, ",")
 }

@@ -3,8 +3,8 @@ package serviceregistry
 import (
 	"context"
 	"fmt"
-	"net"
 	"slices"
+	"strings"
 	"time"
 
 	discoveryv1 "k8s.io/api/discovery/v1"
@@ -16,9 +16,9 @@ import (
 )
 
 type Endpoint struct {
-	PrivateIPv4 string
-	TargetPort  int32
-	NodeName    string
+	Addresses  []string
+	TargetPort int32
+	NodeName   string
 }
 
 type ServiceRegistry interface {
@@ -60,11 +60,14 @@ func (r *KubernetesServiceRegistry) QueryEndpoints(namespace string, serviceName
 	}
 
 	result := make([]Endpoint, 0)
-	seen := map[Endpoint]struct{}{}
+	seen := map[string]struct{}{}
 	for _, endpointSlice := range endpointSlices {
 		resolvedPorts := resolveTargetPorts(endpointSlice.Ports)
 		for _, endpoint := range endpointSlice.Endpoints {
 			if endpoint.Conditions.Ready != nil && !*endpoint.Conditions.Ready {
+				continue
+			}
+			if len(endpoint.Addresses) == 0 {
 				continue
 			}
 
@@ -72,34 +75,31 @@ func (r *KubernetesServiceRegistry) QueryEndpoints(namespace string, serviceName
 			if endpoint.NodeName != nil {
 				nodeName = *endpoint.NodeName
 			}
+			addresses := slices.Clone(endpoint.Addresses)
+			addressesKey := normalizedAddressesKey(addresses)
 
-			for _, address := range endpoint.Addresses {
-				ip := net.ParseIP(address)
-				if ip == nil || ip.To4() == nil {
+			for _, port := range resolvedPorts {
+				key := endpointKey(addressesKey, port, nodeName)
+				if _, exists := seen[key]; exists {
 					continue
 				}
-
-				for _, port := range resolvedPorts {
-					candidate := Endpoint{
-						PrivateIPv4: address,
-						TargetPort:  port,
-						NodeName:    nodeName,
-					}
-					if _, exists := seen[candidate]; exists {
-						continue
-					}
-					seen[candidate] = struct{}{}
-					result = append(result, candidate)
-				}
+				seen[key] = struct{}{}
+				result = append(result, Endpoint{
+					Addresses:  addresses,
+					TargetPort: port,
+					NodeName:   nodeName,
+				})
 			}
 		}
 	}
 
 	slices.SortFunc(result, func(a Endpoint, b Endpoint) int {
-		if a.PrivateIPv4 < b.PrivateIPv4 {
+		aKey := normalizedAddressesKey(a.Addresses)
+		bKey := normalizedAddressesKey(b.Addresses)
+		if aKey < bKey {
 			return -1
 		}
-		if a.PrivateIPv4 > b.PrivateIPv4 {
+		if aKey > bKey {
 			return 1
 		}
 		switch {
@@ -138,4 +138,14 @@ func resolveTargetPorts(endpointSlicePorts []discoveryv1.EndpointPort) []int32 {
 
 	slices.Sort(resolved)
 	return resolved
+}
+
+func endpointKey(addressesKey string, targetPort int32, nodeName string) string {
+	return fmt.Sprintf("%s|%d|%s", addressesKey, targetPort, nodeName)
+}
+
+func normalizedAddressesKey(addresses []string) string {
+	sorted := slices.Clone(addresses)
+	slices.Sort(sorted)
+	return strings.Join(sorted, ",")
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/fabiant7t/hashrouter/internal/rendezvous"
@@ -80,17 +81,22 @@ func (s *Server) handleServicePath(w http.ResponseWriter, r *http.Request, names
 
 	candidates := make([]string, 0, len(endpoints))
 	for _, endpoint := range endpoints {
-		candidates = append(candidates, endpoint.PrivateIPv4)
+		candidates = append(candidates, addressesCandidate(endpoint.Addresses))
 	}
 
-	_, selectedIP := rendezvous.HighestScore(candidates, path)
-	targetEndpoint, found := findEndpointByIP(endpoints, selectedIP)
+	_, selectedCandidate := rendezvous.HighestScore(candidates, path)
+	targetEndpoint, found := findEndpointByCandidate(endpoints, selectedCandidate)
 	if !found {
 		http.Error(w, "failed to select service endpoint", http.StatusBadGateway)
 		return
 	}
+	targetAddress, ok := firstAddress(targetEndpoint.Addresses)
+	if !ok {
+		http.Error(w, "service endpoint has no addresses", http.StatusBadGateway)
+		return
+	}
 
-	target := fmt.Sprintf("http://%s:%d/%s", targetEndpoint.PrivateIPv4, targetEndpoint.TargetPort, path)
+	target := fmt.Sprintf("http://%s:%d/%s", targetAddress, targetEndpoint.TargetPort, path)
 	http.Redirect(w, r, target, http.StatusTemporaryRedirect)
 }
 
@@ -117,11 +123,26 @@ func parseServicePath(path string) (namespace string, serviceName string, remain
 	return segments[0], segments[1], strings.Join(segments[2:], "/"), true
 }
 
-func findEndpointByIP(endpoints []serviceregistry.Endpoint, ip string) (serviceregistry.Endpoint, bool) {
+func findEndpointByCandidate(endpoints []serviceregistry.Endpoint, candidate string) (serviceregistry.Endpoint, bool) {
 	for _, endpoint := range endpoints {
-		if endpoint.PrivateIPv4 == ip {
+		if addressesCandidate(endpoint.Addresses) == candidate {
 			return endpoint, true
 		}
 	}
 	return serviceregistry.Endpoint{}, false
+}
+
+func addressesCandidate(addresses []string) string {
+	sorted := slices.Clone(addresses)
+	slices.Sort(sorted)
+	return strings.Join(sorted, ",")
+}
+
+func firstAddress(addresses []string) (string, bool) {
+	if len(addresses) == 0 {
+		return "", false
+	}
+	sorted := slices.Clone(addresses)
+	slices.Sort(sorted)
+	return sorted[0], true
 }
