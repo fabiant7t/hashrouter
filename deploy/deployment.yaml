@@ -26,7 +26,7 @@ spec:
                 topologyKey: kubernetes.io/hostname
       containers:
         - name: hashrouter
-          image: hashrouter:latest
+          image: hashrouter:v0.0.2
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
