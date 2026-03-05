@@ -7,6 +7,7 @@ Minimal HTTP service for deterministic routing of traffic to specific pods (for 
 - `GET /` returns plain text: `hashrouter dev`
 - `GET /{namespace}/{service}/by-addresses/{path...}` resolves endpoints, selects one via rendezvous hashing, and responds with `307` redirect to `http://{ip}:{port}/{path...}`
 - `GET /{namespace}/{service}/by-node-name/{path...}` resolves endpoints, selects one via rendezvous hashing using `endpoint.nodeName`, and responds with `307` redirect to `http://{ip}:{port}/{path...}`
+  This mode can be useful for services backed by DaemonSet pods.
 - `GET /healthz` returns JSON health payload: `{"health":"ok"}`
 
 For both service routes, each selected endpoint may contain multiple addresses. The redirect target host is always the lexicographically first address from that endpoint's sorted `addresses` list.
