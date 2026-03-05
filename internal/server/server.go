@@ -116,11 +116,14 @@ func parseServicePath(path string) (namespace string, serviceName string, remain
 	}
 
 	segments := strings.Split(trimmed, "/")
-	if len(segments) < 3 {
+	if len(segments) < 4 {
+		return "", "", "", false
+	}
+	if segments[2] != "by-addresses" {
 		return "", "", "", false
 	}
 
-	return segments[0], segments[1], strings.Join(segments[2:], "/"), true
+	return segments[0], segments[1], strings.Join(segments[3:], "/"), true
 }
 
 func findEndpointByCandidate(endpoints []serviceregistry.Endpoint, candidate string) (serviceregistry.Endpoint, bool) {

@@ -61,15 +61,15 @@ func TestNewHandler_Routes(t *testing.T) {
 		},
 		{
 			name:       "service path",
-			path:       "/default/api/v1/users",
+			path:       "/default/api/by-addresses/v1/users",
 			wantCode:   http.StatusTemporaryRedirect,
 			wantBody:   "<a href=\"" + expectedLocation + "\">Temporary Redirect</a>.\n\n",
 			wantHeader: "text/html; charset=utf-8",
 			wantLoc:    expectedLocation,
 		},
 		{
-			name:       "missing service path segment",
-			path:       "/default/api",
+			name:       "legacy path without by-addresses is not found",
+			path:       "/default/api/v1/users",
 			wantCode:   http.StatusNotFound,
 			wantBody:   "404 page not found\n",
 			wantHeader: "text/plain; charset=utf-8",
@@ -134,7 +134,7 @@ func TestServicePath_NoEndpoints_ReturnsBadGateway(t *testing.T) {
 		},
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/default/api/v1/users", nil)
+	req := httptest.NewRequest(http.MethodGet, "/default/api/by-addresses/v1/users", nil)
 	rec := httptest.NewRecorder()
 
 	server.NewHandler(mockRegistry, "dev").ServeHTTP(rec, req)
