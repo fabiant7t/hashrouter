@@ -9,6 +9,8 @@ Minimal HTTP service for deterministic routing of traffic to specific pods (for 
 - `GET /{namespace}/{service}/by-node-name/{path...}` resolves endpoints, selects one via rendezvous hashing using `endpoint.nodeName`, and responds with `307` redirect to `http://{ip}:{port}/{path...}`
 - `GET /healthz` returns JSON health payload: `{"health":"ok"}`
 
+For both service routes, each selected endpoint may contain multiple addresses. The redirect target host is always the lexicographically first address from that endpoint's sorted `addresses` list.
+
 ## Run
 
 ```bash
