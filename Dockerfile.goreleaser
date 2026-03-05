@@ -1,0 +1,5 @@
+FROM gcr.io/distroless/static-debian12
+ARG TARGETARCH
+COPY linux/${TARGETARCH}/hashrouter /hashrouter
+USER nonroot:nonroot
+ENTRYPOINT ["/hashrouter"]

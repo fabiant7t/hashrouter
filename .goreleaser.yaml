@@ -1,0 +1,37 @@
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+    - go test ./...
+
+builds:
+  - id: hashrouter
+    main: ./cmd/hashrouter
+    binary: hashrouter
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Tag }}
+      - -X main.buildDate={{ .Date }}
+      - -X main.gitRevision={{ .Commit }}
+
+dockers_v2:
+  - id: app-docker
+    dockerfile: Dockerfile.goreleaser
+    ids:
+      - hashrouter
+    images:
+      - "docker.io/fabiant7t/hashrouter"
+    tags:
+      - "{{ .Tag }}"
+      - "latest"
+    platforms:
+      - linux/amd64
+      - linux/arm64

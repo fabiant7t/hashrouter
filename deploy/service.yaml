@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: hashrouter
+  labels:
+    app.kubernetes.io/name: hashrouter
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: hashrouter
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: http
