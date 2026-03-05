@@ -15,6 +15,13 @@ const (
 	indexPrefix = "hashrouter "
 )
 
+type routingMode string
+
+const (
+	routingModeByAddresses routingMode = "by-addresses"
+	routingModeByNodeName  routingMode = "by-node-name"
+)
+
 type healthResponse struct {
 	Health string `json:"health"`
 }
@@ -54,16 +61,16 @@ func (s *Server) rootHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	namespace, serviceName, path, ok := parseServicePath(r.URL.Path)
+	namespace, serviceName, mode, path, ok := parseServicePath(r.URL.Path)
 	if ok {
-		s.handleServicePath(w, r, namespace, serviceName, path)
+		s.handleServicePath(w, r, namespace, serviceName, mode, path)
 		return
 	}
 
 	http.NotFound(w, r)
 }
 
-func (s *Server) handleServicePath(w http.ResponseWriter, r *http.Request, namespace string, serviceName string, path string) {
+func (s *Server) handleServicePath(w http.ResponseWriter, r *http.Request, namespace string, serviceName string, mode routingMode, path string) {
 	if s.serviceRegistry == nil {
 		http.Error(w, "service registry unavailable", http.StatusBadGateway)
 		return
@@ -81,11 +88,11 @@ func (s *Server) handleServicePath(w http.ResponseWriter, r *http.Request, names
 
 	candidates := make([]string, 0, len(endpoints))
 	for _, endpoint := range endpoints {
-		candidates = append(candidates, addressesCandidate(endpoint.Addresses))
+		candidates = append(candidates, endpointCandidate(endpoint, mode))
 	}
 
 	_, selectedCandidate := rendezvous.HighestScore(candidates, path)
-	targetEndpoint, found := findEndpointByCandidate(endpoints, selectedCandidate)
+	targetEndpoint, found := findEndpointByCandidate(endpoints, mode, selectedCandidate)
 	if !found {
 		http.Error(w, "failed to select service endpoint", http.StatusBadGateway)
 		return
@@ -109,30 +116,43 @@ func (s *Server) healthzHandler(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-func parseServicePath(path string) (namespace string, serviceName string, remainingPath string, ok bool) {
+func parseServicePath(path string) (namespace string, serviceName string, mode routingMode, remainingPath string, ok bool) {
 	trimmed := strings.Trim(path, "/")
 	if trimmed == "" {
-		return "", "", "", false
+		return "", "", "", "", false
 	}
 
 	segments := strings.Split(trimmed, "/")
 	if len(segments) < 4 {
-		return "", "", "", false
-	}
-	if segments[2] != "by-addresses" {
-		return "", "", "", false
+		return "", "", "", "", false
 	}
 
-	return segments[0], segments[1], strings.Join(segments[3:], "/"), true
+	switch routingMode(segments[2]) {
+	case routingModeByAddresses, routingModeByNodeName:
+		return segments[0], segments[1], routingMode(segments[2]), strings.Join(segments[3:], "/"), true
+	default:
+		return "", "", "", "", false
+	}
 }
 
-func findEndpointByCandidate(endpoints []serviceregistry.Endpoint, candidate string) (serviceregistry.Endpoint, bool) {
+func findEndpointByCandidate(endpoints []serviceregistry.Endpoint, mode routingMode, candidate string) (serviceregistry.Endpoint, bool) {
 	for _, endpoint := range endpoints {
-		if addressesCandidate(endpoint.Addresses) == candidate {
+		if endpointCandidate(endpoint, mode) == candidate {
 			return endpoint, true
 		}
 	}
 	return serviceregistry.Endpoint{}, false
+}
+
+func endpointCandidate(endpoint serviceregistry.Endpoint, mode routingMode) string {
+	switch mode {
+	case routingModeByAddresses:
+		return addressesCandidate(endpoint.Addresses)
+	case routingModeByNodeName:
+		return endpoint.NodeName
+	default:
+		return ""
+	}
 }
 
 func addressesCandidate(addresses []string) string {

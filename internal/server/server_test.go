@@ -29,13 +29,15 @@ func TestNewHandler_Routes(t *testing.T) {
 	candidateA := sortedAddressesCSV([]string{"10.1.0.9", "10.1.0.3"})
 	candidateB := sortedAddressesCSV([]string{"10.1.0.8", "10.1.0.4"})
 	_, selectedCandidate := rendezvous.HighestScore([]string{candidateA, candidateB}, "v1/users")
-	expectedAddress := "10.1.0.3"
-	expectedPort := "8080"
+	expectedByAddressLocation := "http://10.1.0.3:8080/v1/users"
 	if selectedCandidate == candidateB {
-		expectedAddress = "10.1.0.4"
-		expectedPort = "8081"
+		expectedByAddressLocation = "http://10.1.0.4:8081/v1/users"
 	}
-	expectedLocation := "http://" + expectedAddress + ":" + expectedPort + "/v1/users"
+	_, selectedNodeName := rendezvous.HighestScore([]string{"node-a", "node-b"}, "v1/users")
+	expectedByNodeNameLocation := "http://10.1.0.3:8080/v1/users"
+	if selectedNodeName == "node-b" {
+		expectedByNodeNameLocation = "http://10.1.0.4:8081/v1/users"
+	}
 
 	tests := []struct {
 		name       string
@@ -60,16 +62,31 @@ func TestNewHandler_Routes(t *testing.T) {
 			wantHeader: "application/json",
 		},
 		{
-			name:       "service path",
+			name:       "service path by addresses",
 			path:       "/default/api/by-addresses/v1/users",
 			wantCode:   http.StatusTemporaryRedirect,
-			wantBody:   "<a href=\"" + expectedLocation + "\">Temporary Redirect</a>.\n\n",
+			wantBody:   "<a href=\"" + expectedByAddressLocation + "\">Temporary Redirect</a>.\n\n",
 			wantHeader: "text/html; charset=utf-8",
-			wantLoc:    expectedLocation,
+			wantLoc:    expectedByAddressLocation,
+		},
+		{
+			name:       "service path by node name",
+			path:       "/default/api/by-node-name/v1/users",
+			wantCode:   http.StatusTemporaryRedirect,
+			wantBody:   "<a href=\"" + expectedByNodeNameLocation + "\">Temporary Redirect</a>.\n\n",
+			wantHeader: "text/html; charset=utf-8",
+			wantLoc:    expectedByNodeNameLocation,
 		},
 		{
 			name:       "legacy path without by-addresses is not found",
 			path:       "/default/api/v1/users",
+			wantCode:   http.StatusNotFound,
+			wantBody:   "404 page not found\n",
+			wantHeader: "text/plain; charset=utf-8",
+		},
+		{
+			name:       "unknown service path mode is not found",
+			path:       "/default/api/by-zone/v1/users",
 			wantCode:   http.StatusNotFound,
 			wantBody:   "404 page not found\n",
 			wantHeader: "text/plain; charset=utf-8",
@@ -135,6 +152,25 @@ func TestServicePath_NoEndpoints_ReturnsBadGateway(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/default/api/by-addresses/v1/users", nil)
+	rec := httptest.NewRecorder()
+
+	server.NewHandler(mockRegistry, "dev").ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status code mismatch: got %d want %d", rec.Code, http.StatusBadGateway)
+	}
+}
+
+func TestServicePathByNodeName_NoEndpoints_ReturnsBadGateway(t *testing.T) {
+	t.Parallel()
+
+	mockRegistry := &serviceRegistryMock{
+		queryEndpointsFunc: func(namespace string, serviceName string) ([]serviceregistry.Endpoint, error) {
+			return nil, nil
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/default/api/by-node-name/v1/users", nil)
 	rec := httptest.NewRecorder()
 
 	server.NewHandler(mockRegistry, "dev").ServeHTTP(rec, req)
