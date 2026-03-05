@@ -25,7 +25,7 @@ Set `DEBUG=true` to enable debug mode in configuration loading.
 
 ## Kubernetes RBAC
 
-Apply RBAC for cluster-wide service and endpoints informers:
+Apply RBAC for cluster-wide service and endpoint slice informers:
 
 ```bash
 kubectl apply -f deploy/rbac.yaml

@@ -8,10 +8,13 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	corelisters "k8s.io/client-go/listers/core/v1"
+	discoverylisters "k8s.io/client-go/listers/discovery/v1"
 	"k8s.io/client-go/tools/cache"
 )
 
@@ -25,24 +28,24 @@ type ServiceRegistry interface {
 }
 
 type KubernetesServiceRegistry struct {
-	factory         informers.SharedInformerFactory
-	servicesLister  corelisters.ServiceLister
-	endpointsLister corelisters.EndpointsLister
-	syncChecks      []cache.InformerSynced
+	factory              informers.SharedInformerFactory
+	servicesLister       corelisters.ServiceLister
+	endpointSlicesLister discoverylisters.EndpointSliceLister
+	syncChecks           []cache.InformerSynced
 }
 
 func New(ctx context.Context, client kubernetes.Interface, resyncPeriod time.Duration) (ServiceRegistry, error) {
 	factory := informers.NewSharedInformerFactory(client, resyncPeriod)
 	servicesInformer := factory.Core().V1().Services()
-	endpointsInformer := factory.Core().V1().Endpoints()
+	endpointSlicesInformer := factory.Discovery().V1().EndpointSlices()
 
 	registry := &KubernetesServiceRegistry{
-		factory:         factory,
-		servicesLister:  servicesInformer.Lister(),
-		endpointsLister: endpointsInformer.Lister(),
+		factory:              factory,
+		servicesLister:       servicesInformer.Lister(),
+		endpointSlicesLister: endpointSlicesInformer.Lister(),
 		syncChecks: []cache.InformerSynced{
 			servicesInformer.Informer().HasSynced,
-			endpointsInformer.Informer().HasSynced,
+			endpointSlicesInformer.Informer().HasSynced,
 		},
 	}
 
@@ -60,33 +63,64 @@ func (r *KubernetesServiceRegistry) QueryEndpoints(namespace string, serviceName
 		return nil, fmt.Errorf("get service %s/%s: %w", namespace, serviceName, err)
 	}
 
-	endpoints, err := r.endpointsLister.Endpoints(namespace).Get(serviceName)
+	endpointSlices, err := r.endpointSlicesLister.EndpointSlices(namespace).List(labels.SelectorFromSet(labels.Set{
+		discoveryv1.LabelServiceName: serviceName,
+	}))
 	if err != nil {
-		return nil, fmt.Errorf("get endpoints %s/%s: %w", namespace, serviceName, err)
+		return nil, fmt.Errorf("list endpoint slices %s/%s: %w", namespace, serviceName, err)
 	}
 
 	result := make([]Endpoint, 0)
-	for _, subset := range endpoints.Subsets {
-		resolvedPorts := resolveTargetPorts(service.Spec.Ports, subset)
-		for _, address := range subset.Addresses {
-			ip := net.ParseIP(address.IP)
-			if ip == nil || ip.To4() == nil {
+	seen := map[Endpoint]struct{}{}
+	for _, endpointSlice := range endpointSlices {
+		resolvedPorts := resolveTargetPorts(service.Spec.Ports, endpointSlice.Ports)
+		for _, endpoint := range endpointSlice.Endpoints {
+			if endpoint.Conditions.Ready != nil && !*endpoint.Conditions.Ready {
 				continue
 			}
 
-			for _, port := range resolvedPorts {
-				result = append(result, Endpoint{
-					IPv4: address.IP,
-					Port: port,
-				})
+			for _, address := range endpoint.Addresses {
+				ip := net.ParseIP(address)
+				if ip == nil || ip.To4() == nil {
+					continue
+				}
+
+				for _, port := range resolvedPorts {
+					candidate := Endpoint{
+						IPv4: address,
+						Port: port,
+					}
+					if _, exists := seen[candidate]; exists {
+						continue
+					}
+					seen[candidate] = struct{}{}
+					result = append(result, candidate)
+				}
 			}
 		}
 	}
 
+	slices.SortFunc(result, func(a Endpoint, b Endpoint) int {
+		if a.IPv4 < b.IPv4 {
+			return -1
+		}
+		if a.IPv4 > b.IPv4 {
+			return 1
+		}
+		switch {
+		case a.Port < b.Port:
+			return -1
+		case a.Port > b.Port:
+			return 1
+		default:
+			return 0
+		}
+	})
+
 	return result, nil
 }
 
-func resolveTargetPorts(servicePorts []corev1.ServicePort, subset corev1.EndpointSubset) []int32 {
+func resolveTargetPorts(servicePorts []corev1.ServicePort, endpointSlicePorts []discoveryv1.EndpointPort) []int32 {
 	resolved := make([]int32, 0, len(servicePorts))
 	seen := map[int32]struct{}{}
 
@@ -101,7 +135,7 @@ func resolveTargetPorts(servicePorts []corev1.ServicePort, subset corev1.Endpoin
 			target = int32(port.TargetPort.IntValue())
 		case intstr.String:
 			name := port.TargetPort.String()
-			matched, ok := matchNamedEndpointPort(name, subset.Ports)
+			matched, ok := matchNamedEndpointPort(name, endpointSlicePorts)
 			if !ok {
 				continue
 			}
@@ -121,11 +155,15 @@ func resolveTargetPorts(servicePorts []corev1.ServicePort, subset corev1.Endpoin
 	return resolved
 }
 
-func matchNamedEndpointPort(name string, endpointPorts []corev1.EndpointPort) (int32, bool) {
-	for _, port := range endpointPorts {
-		if port.Name == name {
-			return port.Port, true
+func matchNamedEndpointPort(name string, endpointSlicePorts []discoveryv1.EndpointPort) (int32, bool) {
+	for _, port := range endpointSlicePorts {
+		if port.Name == nil || *port.Name != name {
+			continue
 		}
+		if port.Port == nil {
+			return 0, false
+		}
+		return *port.Port, true
 	}
 	return 0, false
 }
